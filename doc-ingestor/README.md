@@ -71,4 +71,4 @@ Configurez les variables d'environnement dans un fichier `.env` si nécessaire.
 ## Développement
 
 Pour les modifications du code, le serveur se relance automatiquement avec le flag `--reload`.
-![My Diagram](https://github.com/Amdjar-Abdelwahid/DocQA-MS-Clinical-Document-QA-Assistant-LLM-Microservices-/issues/1#issue-3677089805)
+https://github.com/Amdjar-Abdelwahid/DocQA-MS-Clinical-Document-QA-Assistant-LLM-Microservices-/issues/1#issue-3677089805

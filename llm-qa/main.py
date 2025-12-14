@@ -109,3 +109,7 @@ async def ask_question(query: Query):
         "answer": result["result"],
         "sources": [doc.metadata.get("source") for doc in result["source_documents"]]
     }
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "llm-qa"}

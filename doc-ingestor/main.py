@@ -67,3 +67,8 @@ async def ingest_document(
 @app.get("/documents/")
 def list_documents(db: Session = Depends(get_db)):
     return db.query(models.DocumentMetadata).all()
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "doc-ingestor"}

@@ -22,7 +22,7 @@ with st.sidebar.expander('Services status'):
     st.write('Ingestor (8000):', '✅' if check_service('http://127.0.0.1:8000') else '❌')
     st.write('LLM (8001):', '✅' if check_service('http://127.0.0.1:8001') else '❌')
     st.write('Synthese (DeID Worker):', '🟢 Running')
-    st.write('RabbitMQ (15672):', '✅' if check_service('http://127.0.0.1:15672') else '❌')
+    st.write('RabbitMQ (15672):', '✅' if check_service('http://localhost:15672') else '❌')
 
 
 # Titre et Header

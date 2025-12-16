@@ -3,118 +3,111 @@ import json
 import time
 import sys
 import os
+import logging # <--- AMÉLIORATION 1
 
-# Import des moteurs d'anonymisation Microsoft
+# Import Presidio
 from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 
-# --- CONFIGURATION ---
-RABBITMQ_HOST = '127.0.0.1' 
-INPUT_QUEUE = 'raw_documents_queue'    # File d'entrée (venant de l'ingestor)
-OUTPUT_QUEUE = 'clean_documents_queue' # File de sortie (vers l'indexeur)
+# --- CONFIGURATION LOGGING ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("DeID-Service")
 
-# Initialisation des moteurs IA
-print("Chargement du modèle IA (Presidio)...")
+# --- CONFIGURATION ENVIRONNEMENT ---
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+INPUT_QUEUE = os.getenv("INPUT_QUEUE", "raw_documents_queue")
+OUTPUT_QUEUE = os.getenv("OUTPUT_QUEUE", "clean_documents_queue")
+# Choix du modèle de langue (fr recommandé pour la France)
+NLP_LANG = os.getenv("NLP_LANG", "en") 
+
+# Initialisation
+logger.info(f"Chargement du modèle IA (Presidio) en langue '{NLP_LANG}'...")
 try:
     analyzer = AnalyzerEngine()
     anonymizer = AnonymizerEngine()
-    print("Modèle chargé avec succès.")
+    logger.info("Modèle chargé avec succès.")
 except Exception as e:
-    print(f"Erreur chargement modèle: {e}")
-    print("Avez-vous lancé: python -m spacy download en_core_web_lg ?")
+    logger.critical(f"Erreur chargement modèle: {e}")
+    logger.critical(f"Avez-vous installé le modèle Spacy ? (python -m spacy download {NLP_LANG}_core_web_lg)")
     sys.exit(1)
 
 def process_text_anonymization(text):
-    """Détecte et remplace les données sensibles"""
-    if not text:
-        return ""
-        
-    # 1. Analyse : Trouve les entités (Noms, Tel, Dates, etc.)
-    # Note: On utilise le modèle par défaut (en) qui capte bien les entités nommées.
-    # Pour un système de prod purement français, on configurerait un modèle 'fr'.
+    if not text: return ""
+    
+    # AMÉLIORATION 2 : Utilisation de la variable de langue
     results = analyzer.analyze(
         text=text, 
-        entities=["PERSON", "PHONE_NUMBER", "EMAIL_ADDRESS", "DATE_TIME", "NRP"], # NRP = Numéro sécu/ID
-        language='en'
+        entities=["PERSON", "PHONE_NUMBER", "EMAIL_ADDRESS", "DATE_TIME", "NRP", "LOCATION"],
+        language=NLP_LANG
     )
     
-    # 2. Anonymisation : Remplace le texte original par les placeholders
     anonymized_result = anonymizer.anonymize(text=text, analyzer_results=results)
-    
     return anonymized_result.text
 
 def callback(ch, method, properties, body):
-    """Fonction déclenchée à chaque message reçu de RabbitMQ"""
     try:
-        # Décoder le message
         message = json.loads(body)
-        doc_id = message.get("doc_id")
+        doc_id = message.get("doc_id", "UNKNOWN")
         raw_text = message.get("text", "")
         
-        print(f" [->] Reçu Document ID {doc_id} ({len(raw_text)} caractères)")
+        logger.info(f"[->] Reçu Doc ID {doc_id} ({len(raw_text)} chars)")
 
-        # --- CŒUR DU TRAITEMENT ---
+        # Traitement
         clean_text = process_text_anonymization(raw_text)
-        # --------------------------
 
-        # Préparer le message pour la suite du pipeline
         output_message = {
             "doc_id": doc_id,
-            "original_text_masked": clean_text, # On envoie le texte propre
+            "original_text_masked": clean_text,
             "metadata": message.get("metadata", {}),
             "processed_at": time.time()
         }
 
-        # Envoyer dans la file de sortie (pour le Service 3: Indexeur)
+        # AMÉLIORATION 3 : Déclaration de la queue de sortie ici aussi par sécurité
         ch.queue_declare(queue=OUTPUT_QUEUE, durable=True)
+        
         ch.basic_publish(
             exchange='',
             routing_key=OUTPUT_QUEUE,
             body=json.dumps(output_message),
-            properties=pika.BasicProperties(delivery_mode=2) # Message persistant
+            properties=pika.BasicProperties(delivery_mode=2)
         )
         
-        print(f" [<-] Document ID {doc_id} anonymisé et envoyé vers '{OUTPUT_QUEUE}'")
-        print(f"      Aperçu: {clean_text[:100]}...") # Affiche le début pour vérifier
-
-        # Confirmer le traitement à RabbitMQ (Ack)
+        logger.info(f"[<-] Doc ID {doc_id} anonymisé -> '{OUTPUT_QUEUE}'")
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
+    except json.JSONDecodeError:
+        logger.error("Message reçu invalide (pas un JSON)")
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
     except Exception as e:
-        print(f"ERREUR lors du traitement: {e}")
-        # En cas d'erreur grave, on rejette le message sans le remettre dans la file (pour éviter une boucle infinie)
+        logger.error(f"Erreur traitement: {e}")
+        # En prod, on pourrait mettre requeue=True avec un compteur d'essais
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 def start_service():
-    """Boucle principale de connexion"""
-    connection = None
     while True:
         try:
-            print(f" [*] Connexion à RabbitMQ ({RABBITMQ_HOST})...")
+            logger.info(f"Connexion à RabbitMQ ({RABBITMQ_HOST})...")
             connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST))
             channel = connection.channel()
 
-            # S'assurer que la queue d'entrée existe (si le Service 1 n'a jamais tourné)
             channel.queue_declare(queue=INPUT_QUEUE, durable=True)
-
-            # QoS: On ne traite qu'un seul message à la fois pour ne pas surcharger le CPU
             channel.basic_qos(prefetch_count=1)
-            
             channel.basic_consume(queue=INPUT_QUEUE, on_message_callback=callback)
 
-            print(' [*] Service DeID en attente de documents. CTRL+C pour quitter.')
+            logger.info('Service DeID démarré. En attente de documents...')
             channel.start_consuming()
             
         except pika.exceptions.AMQPConnectionError:
-            print("RabbitMQ introuvable. Nouvelle tentative dans 5s...")
+            logger.warning("RabbitMQ indisponible. Retentative dans 5s...")
             time.sleep(5)
         except KeyboardInterrupt:
-            print("Arrêt du service.")
-            if connection: connection.close()
+            logger.info("Arrêt du service.")
+            try: connection.close()
+            except: pass
             break
-        except Exception as e:
-            print(f"Erreur inattendue: {e}")
-            time.sleep(5)
 
 if __name__ == "__main__":
     start_service()

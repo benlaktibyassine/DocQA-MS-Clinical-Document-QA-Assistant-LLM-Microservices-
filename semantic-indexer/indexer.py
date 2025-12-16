@@ -7,8 +7,8 @@ from sentence_transformers import SentenceTransformer
 import faiss
 
 # --- CONFIGURATION ---
-RABBITMQ_HOST = '127.0.0.1'
-INPUT_QUEUE = 'clean_documents_queue' # Vient du DeID
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+INPUT_QUEUE = 'clean_documents_queue'
 
 # Fichiers de stockage (Base de données locale)
 INDEX_FILE = "vector_store.faiss"

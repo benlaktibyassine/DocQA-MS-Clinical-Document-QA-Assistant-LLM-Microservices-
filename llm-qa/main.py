@@ -69,17 +69,27 @@ print(f"3. Connexion au LLM Local (Ollama) sur {OLLAMA_BASE_URL}...")
 llm = ChatOllama(model="mistral", base_url=OLLAMA_BASE_URL, temperature=0)
 # Le Prompt (Consignes données à l'IA)
 template = """
-Tu es un assistant médical expert.
-Utilise UNIQUEMENT le contexte suivant pour répondre à la question.
-Si la réponse n'est pas dans le texte, dis "Je ne trouve pas cette information".
+Tu es un Expert en Pharmacopée Chinoise (MTC).
+Tu disposes d'extraits de ta base de données contenant des SCORES DE PERTINENCE pour chaque plante.
 
-Contexte :
+CONTEXTE (Données MTC + Dossier Patient) :
 {context}
 
-Question : 
+INSTRUCTIONS STRICTES :
+1. ANALYSE : Identifie le syndrome du patient dans le contexte.
+2. RECHERCHE : Trouve dans le contexte les plantes associées à ce syndrome.
+3. CLASSEMENT : Trie les plantes selon leur "Score de pertinence" (indiqué dans le contexte).
+   - Score 10 = Plante Empereur (Indispensable)
+   - Score 7 = Plante Ministre
+4. RÉPONSE :
+   - Présente ta réponse sous forme de liste priorisée.
+   - Mentionne toujours le Score et le Rôle pour justifier ton choix.
+   - Exemple : "1. [Plante] (Score 10, Empereur) : Recommandée car..."
+
+QUESTION DU PRATICIEN : 
 {question}
 
-Réponse :
+RÉPONSE EXPERT :
 """
 QA_CHAIN_PROMPT = PromptTemplate(input_variables=["context", "question"], template=template)
 

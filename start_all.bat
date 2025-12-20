@@ -15,7 +15,7 @@ timeout /t 10 /nobreak >nul
 
 :: 2. Lancement Service 1 : Doc Ingestor
 echo [2/6] Démarrage Doc Ingestor (API)...
-start "Service 1: Doc Ingestor" cmd /k "cd doc-ingestor && venv\Scripts\activate && set DB_PORT=5433 && uvicorn main:app --reload --port 8000"
+start "Service 1: Doc Ingestor" cmd /k "cd doc-ingestor && venv\Scripts\activate &&  uvicorn main:app --reload"
 
 :: 3. Lancement Service 2 : DeID (Anonymisation)
 echo [3/6] Démarrage DeID Service...
@@ -23,12 +23,12 @@ start "Service 2: DeID Anonymizer" cmd /k "cd deid-service && venv\Scripts\activ
 
 :: 4. Lancement Service 3 : Semantic Indexer
 echo [4/6] Démarrage Semantic Indexer...
-start "Service 3: Semantic Indexer" cmd /k "cd semantic-indexer && venv\Scripts\activate && python indexer.py"
+start "Service 3: Semantic Indexer" cmd /k "cd semantic-indexer && .venv\Scripts\activate && python indexer.py"
 
 :: 5. Lancement Service 4 : LLM QA
 echo [5/6] Démarrage LLM QA (RAG)...
 :: Note: On pointe vers localhost pour Ollama
-start "Service 4: LLM QA" cmd /k "cd llm-qa && venv\Scripts\activate && set OLLAMA_BASE_URL=http://localhost:11434 && uvicorn main:app --reload --port 8001"
+start "Service 4: LLM QA" cmd /k "cd llm-qa && venv\Scripts\activate && uvicorn main:app --reload --port 8001"
 
 :: 6. Lancement Interface UI
 echo [6/6] Démarrage Interface Clinique...

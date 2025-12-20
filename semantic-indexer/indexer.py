@@ -1,92 +1,129 @@
 import pika
 import json
 import os
+import glob
+import csv
 import numpy as np
-import pickle # Pour sauvegarder les métadonnées simplement
+import pickle
 from sentence_transformers import SentenceTransformer
 import faiss
 
 # --- CONFIGURATION ---
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
 INPUT_QUEUE = 'clean_documents_queue'
+DEFAULT_DATA_DIR = "default_data"
 
-# Fichiers de stockage (Base de données locale)
+# Fichiers de stockage
 INDEX_FILE = "vector_store.faiss"
 METADATA_FILE = "metadata_store.pkl"
 
-# --- INITIALISATION ---
-print("Chargement du modèle d'embedding (HuggingFace)...")
-# On utilise un petit modèle performant et gratuit
+print("Chargement du modèle d'embedding...")
 model = SentenceTransformer('all-MiniLM-L6-v2') 
-dimension = 384 # Taille des vecteurs de ce modèle
+dimension = 384
+index = None
+metadata_store = []
 
-# Chargement ou création de l'index FAISS
-if os.path.exists(INDEX_FILE):
+def save_state():
+    faiss.write_index(index, INDEX_FILE)
+    with open(METADATA_FILE, 'wb') as f:
+        pickle.dump(metadata_store, f)
+    print(" -> Index sauvegardé.")
+
+def add_to_index(text, source_name, doc_type="knowledge_base"):
+    """Ajoute un texte vectorisé à l'index"""
+    global index
+    if not text.strip(): return
+
+    embeddings = model.encode([text])
+    if index is None:
+        index = faiss.IndexFlatL2(dimension)
+    
+    index.add(np.array(embeddings).astype('float32'))
+    
+    metadata_store.append({
+        "doc_id": "KB_MTC",
+        "text_content": text,
+        "source": source_name,
+        "type": doc_type
+    })
+
+def ingest_csv_data():
+    """Traite intelligemment vos CSV MTC"""
+    if not os.path.exists(DEFAULT_DATA_DIR): return
+
+    csv_files = glob.glob(os.path.join(DEFAULT_DATA_DIR, "*.csv"))
+    
+    for file_path in csv_files:
+        filename = os.path.basename(file_path)
+        print(f"🚀 Traitement structuré de : {filename}")
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                count = 0
+                
+                for row in reader:
+                    # CAS 1 : Matrice de Ranking (Scores)
+                    if "matrice" in filename or "ranking" in filename:
+                        # On crée une phrase que le LLM comprendra parfaitement
+                        # Ex: "Pour le syndrome Vide de Qi, la plante Ginseng a un score de 10."
+                        text = (
+                            f"ANALYSE SCORE MTC : Syndrome '{row.get('nom_syndrome', '')}'. "
+                            f"Plante recommandée : {row.get('nom_latin', '')} ({row.get('nom_chinois', '')}). "
+                            f"Score de pertinence : {row.get('score_role', '0')}."
+                        )
+                        add_to_index(text, filename)
+                        count += 1
+
+                    # CAS 2 : Base de Connaissance (Détails)
+                    elif "base" in filename or "connaissance" in filename:
+                        # Ex: "Dans la formule X, la plante Y est Empereur..."
+                        text = (
+                            f"DÉTAIL CLINIQUE : Syndrome '{row.get('nom_syndrome', '')}'. "
+                            f"Formule '{row.get('nom_formule', '')}'. "
+                            f"Plante : {row.get('nom_latin', '')}. "
+                            f"Rôle : {row.get('role_formule', 'Inconnu')} (Score {row.get('score_role', '')}). "
+                            f"Description : {row.get('description', '')}"
+                        )
+                        add_to_index(text, filename)
+                        count += 1
+                        
+                print(f"   -> {count} entrées indexées pour {filename}")
+
+        except Exception as e:
+            print(f"⚠️ Erreur lecture CSV {filename}: {e}")
+
+# --- DÉMARRAGE ---
+if os.path.exists(INDEX_FILE) and os.path.exists(METADATA_FILE):
     print("Chargement de l'index existant...")
     index = faiss.read_index(INDEX_FILE)
     with open(METADATA_FILE, 'rb') as f:
         metadata_store = pickle.load(f)
 else:
-    print("Création d'un nouvel index...")
+    print("Création d'un nouvel index MTC...")
     index = faiss.IndexFlatL2(dimension)
-    metadata_store = [] # Liste pour stocker le texte associé aux vecteurs
+    metadata_store = []
+    ingest_csv_data() # Scan et ingestion des CSV
+    save_state()
 
-print(f"Index prêt. Contient {index.ntotal} vecteurs.")
+print(f"Index prêt ({index.ntotal} vecteurs). En attente RabbitMQ...")
 
-def save_state():
-    """Sauvegarde l'index et les textes sur le disque"""
-    faiss.write_index(index, INDEX_FILE)
-    with open(METADATA_FILE, 'wb') as f:
-        pickle.dump(metadata_store, f)
-    print(" -> Index sauvegardé sur disque.")
-
-def chunk_text(text, chunk_size=500):
-    """Découpe le texte en morceaux de 500 caractères environ"""
-    # Dans la vraie vie, on utilise des "RecursiveCharacterTextSplitter" plus malins
-    # Ici, on fait simple pour comprendre le principe.
-    chunks = []
-    for i in range(0, len(text), chunk_size):
-        chunks.append(text[i:i+chunk_size])
-    return chunks
-
+# --- PARTIE RABBITMQ (Ne change pas) ---
 def callback(ch, method, properties, body):
     try:
         message = json.loads(body)
         doc_id = message.get("doc_id")
-        text = message.get("original_text_masked") # Le texte anonymisé
+        text = message.get("original_text_masked")
+        print(f" [->] Reçu Doc Patient {doc_id}")
         
-        print(f" [->] Reçu Doc ID {doc_id}. Traitement...")
-
-        # 1. Découpage (Chunking)
-        chunks = chunk_text(text)
-        print(f"      Découpé en {len(chunks)} morceaux.")
-
-        if not chunks:
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            return
-
-        # 2. Vectorisation (Embedding)
-        embeddings = model.encode(chunks) # Transforme le texte en chiffres
-
-        # 3. Ajout dans FAISS
-        # FAISS attend des float32
-        index.add(np.array(embeddings).astype('float32'))
-
-        # 4. Stockage des métadonnées (pour retrouver le texte plus tard)
-        # On doit se souvenir que le vecteur N correspond au texte "..." du document Y
+        # Découpage simple pour le texte patient
+        chunks = [text[i:i+500] for i in range(0, len(text), 500)]
+        
         for chunk in chunks:
-            metadata_store.append({
-                "doc_id": doc_id,
-                "text_content": chunk,
-                "source": message.get("metadata", {}).get("filename", "unknown")
-            })
-
-        # 5. Sauvegarde
+            add_to_index(chunk, f"Dossier Patient {doc_id}", "patient_file")
+            
         save_state()
-        
-        print(f" [OK] Doc ID {doc_id} indexé avec succès.")
         ch.basic_ack(delivery_tag=method.delivery_tag)
-
     except Exception as e:
         print(f"Erreur: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
@@ -96,13 +133,7 @@ def start_consuming():
     channel = connection.channel()
     channel.queue_declare(queue=INPUT_QUEUE, durable=True)
     channel.basic_qos(prefetch_count=1)
-    
-    # --- LA CORRECTION EST ICI ---
-    # On dit à RabbitMQ d'envoyer les messages vers notre fonction 'callback'
     channel.basic_consume(queue=INPUT_QUEUE, on_message_callback=callback)
-    # -----------------------------
-    
-    print(' [*] Indexeur Sémantique en attente...')
     channel.start_consuming()
 
 if __name__ == "__main__":
